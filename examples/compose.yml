@@ -1,0 +1,60 @@
+# Put this file in a service repo as deploy/compose.yml.
+# Actions copies it to /opt/<app-name>/compose.yml on the VPS.
+# Real settings and passwords live only in /opt/<app-name>/.env on the VPS.
+#
+# Rules the deploy script relies on:
+# - The image of your own services is ${APP_IMAGE}.
+# - Every long-running service has a healthcheck; deploy waits for it.
+# - A PostgreSQL service is called "db" (it is dumped before each deploy).
+# - Database migrations run in a service called "migrate" in the "ops"
+#   profile (optional). It runs once before the new image starts.
+# - Logs are capped, so they cannot fill the VPS disk.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *logging
+
+  migrate:
+    image: ${APP_IMAGE}
+    profiles: ["ops"]
+    command: ["migrate"]
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *logging
+
+  web:
+    image: ${APP_IMAGE}
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    logging: *logging
+
+volumes:
+  pgdata:

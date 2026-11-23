@@ -1,0 +1,29 @@
+# Cloudflare Tunnel connector for the VPS. install.sh puts this file in
+# /opt/tunnel/compose.yml; the token lives only in /opt/tunnel/.env.
+#
+# The connector joins the shared "proxy" network, so a published route in
+# the Cloudflare dashboard can point at a container by name
+# (for example http://web:8000).
+# host.docker.internal reaches the VPS itself (used later for SSH).
+
+services:
+  cloudflared:
+    # 2026.11.1, pinned by digest so an update is a deliberate change.
+    image: cloudflare/cloudflared:2026.11.1@sha256:e613aadbc2d9511785d2e67a86b0c8ac18dd63a3f9af0d06faf04cbfdcb35f2d
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?Set TUNNEL_TOKEN in /opt/tunnel/.env}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - proxy
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  proxy:
+    external: true

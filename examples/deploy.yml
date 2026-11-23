@@ -1,0 +1,26 @@
+# Put this file in a service repo as .github/workflows/deploy.yml.
+# Pull requests run the tests. A push to main tests and deploys.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  vps:
+    uses: syamo-game/deploy-kit/.github/workflows/vps-deploy.yml@v1
+    permissions:
+      contents: read
+      packages: write
+    with:
+      app-name: example-app
+      test-postgres: true
+    # Pass secrets one by one: "secrets: inherit" does not work across
+    # GitHub accounts, and the kit lives in another account for some repos.
+    secrets:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+      VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}

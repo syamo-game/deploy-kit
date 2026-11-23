@@ -1,0 +1,210 @@
+# Shared deploy workflow for services that run on the VPS with Docker Compose.
+#
+# On a pull request: run the tests only.
+# On a push to main: test -> build the image and push it to GHCR -> deploy
+# it on the VPS with remote/deploy.sh (backup, health check, roll back,
+# keep only a few images and dumps).
+#
+# A service calls it like examples/deploy.yml does.
+
+name: VPS deploy
+
+on:
+  workflow_call:
+    inputs:
+      app-name:
+        description: Lower-case service name. It lives in /opt/<app-name> on the VPS and is the image name in GHCR.
+        type: string
+        required: true
+      dockerfile:
+        type: string
+        default: Dockerfile
+      test-target:
+        description: Dockerfile stage whose default command runs the tests.
+        type: string
+        default: test
+      runtime-target:
+        description: Dockerfile stage that runs in production.
+        type: string
+        default: runtime
+      test-postgres:
+        description: Start PostgreSQL 16 for the tests (TEST_DATABASE_URL is set).
+        type: boolean
+        default: false
+      compose-file:
+        description: Compose file in the service repo, copied to /opt/<app-name>/compose.yml.
+        type: string
+        default: deploy/compose.yml
+      kit-ref:
+        description: Ref of this kit to take remote/deploy.sh from. Keep it equal to the ref after "@" in "uses".
+        type: string
+        default: v1
+    secrets:
+      VPS_HOST:
+        required: true
+      VPS_USER:
+        required: true
+      VPS_SSH_KEY:
+        required: true
+      VPS_SSH_KNOWN_HOSTS:
+        required: true
+
+env:
+  APP_NAME: ${{ inputs.app-name }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check the app name
+        run: |
+          [[ "$APP_NAME" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] || { echo "Bad app-name: $APP_NAME" >&2; exit 1; }
+
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Start PostgreSQL for the tests
+        if: inputs.test-postgres
+        run: |
+          docker run -d --name test-db -p 5432:5432 \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=app_test \
+            --health-cmd "pg_isready -U postgres -d app_test" --health-interval 2s --health-retries 30 \
+            postgres:16-alpine
+          for i in $(seq 1 60); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' test-db)" = healthy ] && exit 0
+            sleep 2
+          done
+          docker logs test-db
+          echo "PostgreSQL did not become healthy" >&2
+          exit 1
+
+      - name: Build the test image
+        env:
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          TEST_TARGET: ${{ inputs.test-target }}
+        run: docker build --target "$TEST_TARGET" -f "$DOCKERFILE" -t app:test .
+
+      - name: Run the tests
+        run: |
+          docker run --rm --network host \
+            -e TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/app_test \
+            app:test
+
+  build:
+    name: Build and push the image
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+
+      - name: Compute the image name
+        id: name
+        run: echo "repo=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${APP_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@e92390c5fb421da1463c202d546fed0ec5c39f20
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d70bba72b1f3fd22344832f00baa16ece964efeb
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@2cdde995de11925a030ce8070c3d77a52ffcf1c0
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          target: ${{ inputs.runtime-target }}
+          push: true
+          labels: org.opencontainers.image.revision=${{ github.sha }}
+          tags: |
+            ${{ steps.name.outputs.repo }}:sha-${{ github.sha }}
+            ${{ steps.name.outputs.repo }}:main
+
+      # The VPS gets the image by digest, so it runs exactly what was tested.
+      - name: Record the image digest
+        id: ref
+        env:
+          REPO: ${{ steps.name.outputs.repo }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Unexpected digest: $DIGEST" >&2; exit 1; }
+          echo "image=$REPO@$DIGEST" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy to the VPS
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    concurrency:
+      group: vps-deploy-${{ inputs.app-name }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout the service
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        with:
+          path: app
+
+      - name: Checkout the deploy kit
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        with:
+          repository: syamo-game/deploy-kit
+          ref: ${{ inputs.kit-ref }}
+          path: kit
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          (umask 077; printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy)
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<'EOF'
+          Host vps
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            BatchMode yes
+            ServerAliveInterval 30
+          EOF
+
+      - name: Copy the compose file and the deploy script
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          COMPOSE_FILE: ${{ inputs.compose-file }}
+        run: |
+          ssh -F ~/.ssh/config -o HostName="$VPS_HOST" "$VPS_USER@vps" "mkdir -p /opt/$APP_NAME/.deploy"
+          scp -F ~/.ssh/config -o HostName="$VPS_HOST" "app/$COMPOSE_FILE" "$VPS_USER@vps:/opt/$APP_NAME/compose.yml"
+          scp -F ~/.ssh/config -o HostName="$VPS_HOST" kit/remote/deploy.sh "$VPS_USER@vps:/opt/$APP_NAME/.deploy/deploy.sh"
+
+      # The token goes over stdin, so it never shows up in a process list.
+      # It is the run's own GITHUB_TOKEN and stops working when the run ends.
+      - name: Deploy
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          [[ "$GHCR_USER" =~ ^[A-Za-z0-9-]+(\[bot\])?$ ]] || { echo "Unexpected actor: $GHCR_USER" >&2; exit 1; }
+          printf '%s' "$GHCR_TOKEN" |
+            ssh -F ~/.ssh/config -o HostName="$VPS_HOST" "$VPS_USER@vps" \
+              "GHCR_USER='$GHCR_USER' bash /opt/$APP_NAME/.deploy/deploy.sh '$APP_NAME' '$IMAGE'"
