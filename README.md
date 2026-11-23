@@ -68,7 +68,7 @@ GHCR 側のイメージは自動では消しません。コンテナイメージ
 ## 入口（Cloudflare Tunnel）
 
 [infra/tunnel/](infra/tunnel/) は、VPS の入口を Cloudflare Tunnel にするための接続役（cloudflared）です。
-`install.sh` を VPS で実行すると、トークンを聞いて起動し、接続できたかまで確かめます。
+`install.sh` を VPS で実行すると、トークンを聞いて起動し、接続できたかまで確かめます。トークンは Cloudflare の画面のコピーボタンで取り、コマンドごと貼り付けて構いません。
 接続役は共通ネットワーク `proxy` に入るので、各サービスもこのネットワークにつなげば、Cloudflare の画面から公開先を設定できます。
 
 ## 公開について
@@ -77,18 +77,7 @@ GHCR 側のイメージは自動では消しません。コンテナイメージ
 中に鍵や接続先は含みません。公開しているのは手順だけです。
 呼び出し側は `@v1` のようにタグで版を固定し、共通部品を直したらタグを進めます。
 
-## 確かめたこと、まだのこと
-
-確かめたこと
-
-- `remote/deploy.sh` の判定処理（入力の検査、保持数の計算、履歴の更新、消すイメージの選び方）のテスト24件
-- `infra/tunnel/install.sh` のトークンの読み取り処理のテスト8件
-
-まだのこと
-
-- `remote/deploy.sh` と `infra/tunnel/install.sh` を実際のサーバーで通しで動かすこと
-- 共通ワークフローを GitHub 上で動かすこと
-- ワークフローの静的検査（actionlint）
+## テスト
 
 ```bash
 bash tests/test_deploy.sh

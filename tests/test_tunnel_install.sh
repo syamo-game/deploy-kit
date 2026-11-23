@@ -47,6 +47,26 @@ expect_eq "extract_token fails on a token that is too short" 1 "$?"
 extract_token "${TOKEN}\$(reboot)" >/dev/null 2>&1
 expect_eq "extract_token fails on characters a token never has" 1 "$?"
 
+is_masked_paste "cloudflared.exe service install eyJhIjoi********************bSJ9"
+expect_eq "is_masked_paste spots the dashboard's masked display" 0 "$?"
+
+is_masked_paste "$TOKEN"
+expect_eq "is_masked_paste accepts a real token" 1 "$?"
+
+# describe_input explains a failed paste without showing the input itself.
+got="$(describe_input "")"
+expect_eq "describe_input reports an empty paste" "received 0 characters in 0 words; no word starts with eyJ" "$got"
+
+got="$(describe_input $'\x16')"
+expect_eq "describe_input counts a lone control character" "received 1 characters in 1 words; no word starts with eyJ" "$got"
+
+got="$(describe_input "eyJabc def")"
+expect_eq "describe_input notices a token-like word" "received 10 characters in 2 words; a word starts with eyJ" "$got"
+
+got="$(describe_input "$TOKEN")"
+[[ "$got" != *"$TOKEN"* && "$got" != *eyJh* ]]
+expect_eq "describe_input never prints the input" 0 "$?"
+
 echo
 if ((fails > 0)); then
   echo "$fails test(s) failed"

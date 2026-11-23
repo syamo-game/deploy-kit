@@ -32,6 +32,20 @@ extract_token() {
   printf '%s\n' "$found"
 }
 
+# The dashboard shows the token with "*" in place of most characters.
+# Selecting that text copies the stars, not the token.
+is_masked_paste() { [[ "$1" == *eyJ*'***'* ]]; }
+
+# Say what arrived, without printing it, so a failed paste can be diagnosed.
+describe_input() {
+  local words=() word starts="no word starts with eyJ"
+  read -ra words <<<"$1"
+  for word in "${words[@]}"; do
+    if [[ "$word" == eyJ* ]]; then starts="a word starts with eyJ"; fi
+  done
+  printf 'received %d characters in %d words; %s\n' "${#1}" "${#words[@]}" "$starts"
+}
+
 # ---- Steps ------------------------------------------------------------------
 
 main() {
@@ -59,9 +73,12 @@ main() {
     printf '\nPaste the tunnel token (or the whole command from the dashboard), then press Enter.\n'
     printf 'The input is hidden.\n> '
     read -rs input
-    printf '\n'
+    printf '\n(%s)\n' "$(describe_input "$input")"
+    if is_masked_paste "$input"; then
+      die "this is the masked text shown on the page (it contains ***). Use the copy icon at the right end of the command box instead of selecting the text."
+    fi
     token="$(extract_token "$input")" ||
-      die "no tunnel token found in the input. Copy it again from Cloudflare: Networking > Tunnels > your tunnel"
+      die "no tunnel token found in the input. Copy it again from Cloudflare: Networking > Tunnels > your tunnel. If 0 characters arrived, the paste did not reach this window: try right-click or Shift+Insert to paste."
     (umask 077; printf 'TUNNEL_TOKEN=%s\n' "$token" >"$TUNNEL_DIR/.env")
     log "Saved the token to $TUNNEL_DIR/.env (mode 600)"
   fi
