@@ -17,8 +17,8 @@ jobs:
     with:
       app-name: example-app
       test-postgres: true
-    # Pass secrets one by one: "secrets: inherit" does not work across
-    # GitHub accounts, and the kit lives in another account for some repos.
+    # Pass secrets one by one: "secrets: inherit" does not reach a workflow
+    # that lives in another GitHub account.
     secrets:
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USER: ${{ secrets.VPS_USER }}
